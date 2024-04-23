@@ -2,6 +2,7 @@
 env/
 venv/
 rag_venv/
+.env
 
 # notebook folders
 .ipynb_checkpoints/
@@ -17,3 +18,5 @@ rag_venv/
 # cache
 __pycache__/
 old/
+
+.DS_Store
