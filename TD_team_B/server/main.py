@@ -11,13 +11,11 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import llama_index.core
 from llama_index.core import ServiceContext, SimpleDirectoryReader, VectorStoreIndex
-from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.core.memory import ChatMemoryBuffer
 import uvicorn
 import chromadb
-
+from llama_index.llms.cohere import Cohere
 from chat_response import ChatResponse, ResponseType, Sender
 
 llama_index.core.set_global_handler("simple")
@@ -31,8 +29,39 @@ queries = [
     "What investment tools (derivatives, leverage, etc) does does the fund use to achieve their investment goals?"
 ]
 
-rag_model = {    
+rag_sessions = {    
 }
+
+def ollama_llm_model(params):
+    return Ollama(model=params["modelName"], request_timeout=30.0, temperature=0)
+    
+llm_model_dict = {
+    "ollama": ollama_llm_model
+}
+
+def ollama_embedding_model(params):
+    return OllamaEmbedding(
+        model_name=params["modelName"],
+        ollama_additional_kwargs={"mirostat": 0},
+    )
+
+embedding_model_dict = {
+    "ollama": ollama_embedding_model
+}
+
+def create_rag_session(settings:dict):
+    llm_name = settings["llm"]
+    llm_params = settings["llms"][llm_name]
+    embedding_name = settings["embedding"]
+    embedding_params = settings["embeddings"][embedding_name]
+    return {
+        "llm_name": llm_name,
+        "llm_params": llm_params,
+        "embedding_name": embedding_name,
+        "embedding_params": embedding_params,
+        "llm_model": llm_model_dict[llm_name](llm_params),
+        "embed_model": embedding_model_dict[embedding_name](embedding_params),
+    }
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,7 +93,7 @@ app.add_middleware(
 
 
 @app.post("/upload/")
-async def create_upload_files(files: List[UploadFile] = File(...)):
+async def create_upload_files(session_id: str, settings: dict, files: List[UploadFile] = File(...)):
     # Create a temporary directory to store uploaded files
     with tempfile.TemporaryDirectory() as temp_dir:
         for file in files:
@@ -74,6 +103,13 @@ async def create_upload_files(files: List[UploadFile] = File(...)):
                 shutil.copyfileobj(file.file, buffer)
         
         documents = SimpleDirectoryReader(input_dir=temp_dir).load_data()
+    
+    rag_session = create_rag_session(settings)
+    service_context = ServiceContext.from_defaults(
+        embed_model=rag_model["embed_model"],
+        llm=llm,
+        chunk_size=200
+    )
     index = VectorStoreIndex.from_documents(documents, service_context=rag_model["service_context"])
     query_engine = index.as_query_engine(
         #node_postprocessors = [reranker]

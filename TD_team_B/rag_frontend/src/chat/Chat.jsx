@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useContext } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import Messages from "./Messages";
 import Sidebar from "./Sidebar";
@@ -18,7 +18,8 @@ function newConversation() {
   };
 }
 
-function Chat({ bearerToken, onMissingBearerToken }) {
+function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
+  const { settings } = useContext(SettingsContext);
   const { conversationId: cid } = useParams();
   const conversationId = cid == null ? null : parseInt(cid);
   const navigate = useNavigate();
@@ -243,6 +244,7 @@ function Chat({ bearerToken, onMissingBearerToken }) {
         onSelectConversation={onSelectConversation}
         onDeleteConversation={onDeleteConversation}
         onNewChat={onNewChat}
+        onToggleSettings={onToggleSettings}
       />
       </div>
       <div className="h-lvh flex-1">

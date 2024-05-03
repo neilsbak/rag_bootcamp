@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { ReactComponent as GearIcon } from '../GearIcon.svg'
 
 function Sidebar({
   conversations,
@@ -6,14 +7,20 @@ function Sidebar({
   onSelectConversation,
   onDeleteConversation,
   onNewChat,
+  onToggleSettings,
 }) {
   const [showTrashId, setShowTrashId] = useState(null);
 
   return (
     <div className="w-64 h-screenflex flex-col">
-      <a href="/" className="px-5 pt-5 pb-3 block">
-        <h2 className="text-lg font-bold">FundChat</h2>
-      </a>
+      <div className="flex items-center justify-between px-5 pt-5 pb-5">
+        <a href="/" className="block">
+          <h2 className="text-lg font-bold">FundChat</h2>
+        </a>
+        <button onClick={onToggleSettings}>
+          <GearIcon className="h-6 w-6 fill-current stroke-black" />
+        </button>
+      </div>
       <div className="mb-4 mx-5">
         <button
           className="w-full text-sm bg-blue-500 hover:bg-blue-700 text-white font-semibold p-2 px-4 rounded transition duration-150"
@@ -29,8 +36,7 @@ function Sidebar({
             onClick={() => onSelectConversation(conversation)}
             onMouseEnter={() => setShowTrashId(conversation.id)}
             onMouseLeave={() => setShowTrashId(null)}
-            className={`px-5 py-2 hover:bg-gray-700 transition duration-150 cursor-pointer ${
-              selectedConversation?.id === conversation.id ? "bg-gray-700" : ""}`}
+            className={`px-5 py-2 hover:bg-gray-700 transition duration-150 cursor-pointer ${selectedConversation?.id === conversation.id ? "bg-gray-700" : ""}`}
           >
             <div className="flex justify-between items-center">
               <div>
@@ -40,7 +46,7 @@ function Sidebar({
                     (conversation.messages ?? [])[1]?.queryText ||
                     "No recent messages"}
                 </div>
-              </div>            
+              </div>
               {showTrashId === conversation.id && (
                 <div
                   className="trash-icon"
