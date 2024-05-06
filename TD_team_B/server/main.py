@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import json
 import logging
 from pathlib import Path
 import tempfile
@@ -6,19 +7,22 @@ import shutil
 
 import traceback
 from typing import List
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import llama_index.core
-from llama_index.core import ServiceContext, SimpleDirectoryReader, VectorStoreIndex
+from llama_index.core import Settings, StorageContext, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.llms import ChatMessage, MessageRole
 import uvicorn
 import chromadb
-from llama_index.llms.cohere import Cohere
 from chat_response import ChatResponse, ResponseType, Sender
+from rag_session import RagSession
 
 llama_index.core.set_global_handler("simple")
+Settings.chunk_size = 200
+Settings.chunk_overlap = 30
 
 queries = [
     "What is the investment strategy of the fund?",
@@ -29,58 +33,7 @@ queries = [
     "What investment tools (derivatives, leverage, etc) does does the fund use to achieve their investment goals?"
 ]
 
-rag_sessions = {    
-}
-
-def ollama_llm_model(params):
-    return Ollama(model=params["modelName"], request_timeout=30.0, temperature=0)
-    
-llm_model_dict = {
-    "ollama": ollama_llm_model
-}
-
-def ollama_embedding_model(params):
-    return OllamaEmbedding(
-        model_name=params["modelName"],
-        ollama_additional_kwargs={"mirostat": 0},
-    )
-
-embedding_model_dict = {
-    "ollama": ollama_embedding_model
-}
-
-def create_rag_session(settings:dict):
-    llm_name = settings["llm"]
-    llm_params = settings["llms"][llm_name]
-    embedding_name = settings["embedding"]
-    embedding_params = settings["embeddings"][embedding_name]
-    return {
-        "llm_name": llm_name,
-        "llm_params": llm_params,
-        "embedding_name": embedding_name,
-        "embedding_params": embedding_params,
-        "llm_model": llm_model_dict[llm_name](llm_params),
-        "embed_model": embedding_model_dict[embedding_name](embedding_params),
-    }
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    llm = Ollama(model="llama3:latest", request_timeout=30.0, temperature=0)
-
-    rag_model["embed_model"] = OllamaEmbedding(
-        model_name="nomic-embed-text",
-        base_url="http://localhost:11434",
-        ollama_additional_kwargs={"mirostat": 0},
-    )
-
-    rag_model["service_context"] = ServiceContext.from_defaults(
-        embed_model=rag_model["embed_model"],
-        llm=llm,
-        chunk_size=200
-    )
-    yield    
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 origins = ["*"]
 app.add_middleware(
@@ -93,7 +46,7 @@ app.add_middleware(
 
 
 @app.post("/upload/")
-async def create_upload_files(session_id: str, settings: dict, files: List[UploadFile] = File(...)):
+async def create_upload_files(session_id: str = Form(...), settings: str = Form(...), files: List[UploadFile] = File(...)):
     # Create a temporary directory to store uploaded files
     with tempfile.TemporaryDirectory() as temp_dir:
         for file in files:
@@ -103,15 +56,16 @@ async def create_upload_files(session_id: str, settings: dict, files: List[Uploa
                 shutil.copyfileobj(file.file, buffer)
         
         documents = SimpleDirectoryReader(input_dir=temp_dir).load_data()
-    
-    rag_session = create_rag_session(settings)
-    service_context = ServiceContext.from_defaults(
-        embed_model=rag_model["embed_model"],
-        llm=llm,
-        chunk_size=200
-    )
-    index = VectorStoreIndex.from_documents(documents, service_context=rag_model["service_context"])
+
+    rag_session = RagSession(json.loads(settings))
+
+    db = chromadb.PersistentClient(path="./chroma_db")
+    chroma_collection = db.get_or_create_collection(session_id)
+    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    index = VectorStoreIndex.from_documents(documents, storage_context=storage_context, embed_model=rag_session.embed_model)
     query_engine = index.as_query_engine(
+        llm=rag_session.llm_model
         #node_postprocessors = [reranker]
     )
     fund_name_response = query_engine.query("What is the name of the fund? Give only the name without additional comments. The name of the fund is: ")
@@ -123,44 +77,71 @@ async def create_upload_files(session_id: str, settings: dict, files: List[Uploa
 
     response_answer_pairs = [{"query": query, "response": response.response} for query,response in zip (queries, responses)]
 
-    memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
-    rag_model["chat_engine"] = index.as_chat_engine(
-        chat_mode="context",
-        memory=memory,
-        system_prompt=(
-            f"You are an expert Mutual Fund analyst for a bank, and you privide answers to your boss about whether the bank should purchase the fund named {fund_name}. Only base your answer on the context information. If the information is not provided, just say you don't know."
-        ),
-    )
-    
     return {
         "fund_name": fund_name,
         "fund_overview": response_answer_pairs
     }
 
-@app.get("/chat/")
-async def root(query: str) -> StreamingResponse:
-    response = rag_model["chat_engine"].stream_chat(query)
-    return StreamingResponse(response.response_gen, media_type="text/event-stream")
-
 @app.websocket("/ws_chat")
 async def websocket_query(websocket: WebSocket):
     await websocket.accept()
+    chat_history = []
+    fund_name = ""
     try:
         # TODO: set up authentication
         is_authenticated = False
         while True:
             if not is_authenticated:
                 chat_info = await websocket.receive_json()
+                fund_name = chat_info["fund_name"]
                 # TODO: setup rag index and authenticate
                 is_authenticated = True            
+                chat_history = [
+                    item
+                    for pair in (chat_info.get("history") or [])
+                    for item in [
+                        ChatMessage(role=MessageRole.USER, content=pair[0]),
+                        ChatMessage(role=MessageRole.ASSISTANT, content=pair[1])
+                    ]
+                ]
             else:
-                query = await websocket.receive_text()
+                query_info = await websocket.receive_json()
+
+                query = query_info["query"]
                 await websocket.send_text(ChatResponse(sender=Sender.BOT, type=ResponseType.START).model_dump_json())
                 await websocket.send_text(ChatResponse(sender=Sender.YOU, message=query, type=ResponseType.STREAM).model_dump_json())
-                response = await rag_model["chat_engine"].astream_chat(f"{query}\nIf the context does not contain the information to answer this question, then do not attempt to answer, and just say you don't know.")
-                async for response_chunk in response.async_response_gen(): # Assuming this is iterable
-                    await websocket.send_text(ChatResponse(sender=Sender.BOT, message=response_chunk, type=ResponseType.STREAM).model_dump_json())
+
+                session_id = query_info["session_id"]
+                print(f"session_id: {session_id}")
+                rag_session = RagSession(query_info["settings"])
+
+                db2 = chromadb.PersistentClient(path="./chroma_db")
+                chroma_collection = db2.get_collection(session_id)
+                vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+                index = VectorStoreIndex.from_vector_store(
+                    vector_store,
+                    embed_model=rag_session.embed_model,
+                )
+                memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
+                print(chat_history)
+                chat_engine = index.as_chat_engine(
+                    llm=rag_session.llm_model,
+                    chat_mode="context",
+                    memory=memory,
+                    system_prompt=
+                        f"You are an expert Mutual Fund analyst for a bank, and you privide answers to your boss about whether the bank should purchase the fund named {fund_name}. Only base your answer on the context information. If the information is not provided, just say you don't know.",
+                )
+                message = f"{query}\nIf the context does not contain the information to answer this question, then do not attempt to answer, and just say you don't know."
+                if rag_session.use_async_chat:
+                    response = await chat_engine.astream_chat(message=message, chat_history=chat_history)
+                    async for response_chunk in response.async_response_gen(): # Assuming this is iterable
+                        await websocket.send_text(ChatResponse(sender=Sender.BOT, message=response_chunk, type=ResponseType.STREAM).model_dump_json())
+                else:
+                    response = chat_engine.stream_chat(message=message, chat_history=chat_history)
+                    for response_chunk in response.response_gen:
+                        await websocket.send_text(ChatResponse(sender=Sender.BOT, message=response_chunk, type=ResponseType.STREAM).model_dump_json())
                 await websocket.send_text(ChatResponse(sender=Sender.BOT, type=ResponseType.END).model_dump_json())
+                chat_history = chat_engine.chat_history
     except WebSocketDisconnect:
        logging.info("websocket disconnect")
     except Exception as e:

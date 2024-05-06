@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 
-function DocumentUpload({ onUploadComplete }) {
+function DocumentUpload({ settings, onUploadComplete }) {
     const [files, setFiles] = useState([]);
     const [isUploading, setIsUploading] = useState(false);
 
@@ -10,9 +11,10 @@ function DocumentUpload({ onUploadComplete }) {
 
     const handleSubmit = async (event) => {
         event.preventDefault();
-
-        // Create a FormData object and append the files
+        const sessionId = uuidv4();
         const formData = new FormData();
+        formData.append('session_id', sessionId);
+        formData.append('settings', JSON.stringify(settings));
         for (let i = 0; i < files.length; i++) {
             formData.append('files', files[i]);
         }
@@ -23,15 +25,15 @@ function DocumentUpload({ onUploadComplete }) {
                 method: 'POST',
                 body: formData,
             });
-            //let response = {ok: 1, json: () => ({fund_name: "Test Fund", fund_overview: [{"query": "What does it do?", "response": "It invests in stuff"}]})};
 
             // Process the response
             if (response.ok) {
                 const data = await response.json();
                 console.log('Upload successful:', data);
                 setIsUploading(false);
-                onUploadComplete(Array(files).map(f => f.name), data['fund_name'], data['fund_overview']);
+                onUploadComplete(Array(files).map(f => f.name), data['fund_name'], data['fund_overview'], sessionId, settings['embedding']);
             } else {
+                console.log(JSON.stringify(await response.json()));
                 throw new Error('Network response was not ok.');
             }
         } catch (error) {

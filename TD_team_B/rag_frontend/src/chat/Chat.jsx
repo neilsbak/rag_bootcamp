@@ -6,6 +6,7 @@ import DocumentUpload from "./DocumentUpload";
 import { addMessage, getConversations, deleteConversation, addConversation } from "./chatdb";
 import FundOverview from "./FundOverview";
 import MessageInput from "./MessageInput";
+import { SettingsContext } from "../settings/Settings";
 
 const startingMessages = [
 ];
@@ -47,7 +48,7 @@ function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
       chatContainer.scrollTop = chatContainer.scrollHeight;
     }
   };
-  
+
   useEffect(() => {
     getConversations().then((conversations) => {
       setConversations(conversations);
@@ -119,6 +120,7 @@ function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
       websocket.send(
         JSON.stringify({
           bearer_token: bearerToken,
+          fund_name: selectedConversation.fundName,
           history:
             selectedConversation.messages?.map((m) => [
               m.queryText,
@@ -187,9 +189,14 @@ function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
     if (!queryText) {
       return;
     }
+    const query_info = {
+      query: queryText,
+      settings: {...settings, embedding: selectedConversation.embedModel},
+      session_id: selectedConversation.sessionId || selectedConversation.id
+    };
     if (websocket.readyState === websocket.OPEN) {
       setIsResponding(true);
-      websocket.send(queryText);
+      websocket.send(JSON.stringify(query_info));
     } else {
       const ws = createWebsocket();
       setIsWebsocketReady(false);
@@ -198,7 +205,7 @@ function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
       setTimeout(() => {
         if (ws.readyState === websocket.OPEN) {
           setIsResponding(true);
-          ws.send(queryText);
+          ws.send(JSON.stringify(query_info));
         } else {
           setErrorMessage(`Connection Error`);
         }
@@ -209,7 +216,7 @@ function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
   const onSelectConversation = (conversation) => {
     if (conversation == null) {
       navigate('/chat');
-    } else if (conversation.id !== selectedConversation.id) {
+    } else if (conversation.id !== selectedConversation?.id) {
       navigate(`/chat/conversation/${conversation.id}`);
     }
   };
@@ -226,30 +233,35 @@ function Chat({ bearerToken, onMissingBearerToken, onToggleSettings }) {
 
   const onNewChat = () => navigate("/chat/");
 
-  const onUploadComplete = async (documentNames, fundName, fundOverview) => {
-    const conversation = await addConversation(
-      { ...selectedConversation, documents: documentNames, fundName: fundName, fundOverview: fundOverview, messages: []}
-    );
-    setConversations(await getConversations());
-    setSelectedConversation(conversation);
+  const onUploadComplete = async (documentNames, fundName, fundOverview, sessionId, embedModel) => {
+    const conversation = await addConversation({
+      ...selectedConversation,
+      sessionId: sessionId,
+      documents: documentNames,
+      fundName: fundName,
+      fundOverview: fundOverview,
+      embedModel: embedModel,
+      messages: []
+    });
+    navigate(`/chat/conversation/${conversation.id}`);
   };
 
   setupWebsocket(websocket);
   return (
     <div className="flex bg-gray-800 text-white ">
       <div className="bg-gray-900">
-      <Sidebar
-        conversations={conversations}
-        selectedConversation={selectedConversation}
-        onSelectConversation={onSelectConversation}
-        onDeleteConversation={onDeleteConversation}
-        onNewChat={onNewChat}
-        onToggleSettings={onToggleSettings}
-      />
+        <Sidebar
+          conversations={conversations}
+          selectedConversation={selectedConversation}
+          onSelectConversation={onSelectConversation}
+          onDeleteConversation={onDeleteConversation}
+          onNewChat={onNewChat}
+          onToggleSettings={onToggleSettings}
+        />
       </div>
       <div className="h-lvh flex-1">
         {!isLoading && ((selectedConversation?.documents ?? []).length == 0 ?
-          <DocumentUpload onUploadComplete={onUploadComplete} /> :
+          <DocumentUpload onUploadComplete={onUploadComplete} settings={settings} /> :
           <div className="flex flex-col h-screen">
             <div ref={chatContainerRef} className="flex-grow overflow-y-auto">
               <div className="py-5 px-10">

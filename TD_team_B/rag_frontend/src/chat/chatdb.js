@@ -1,4 +1,4 @@
-const dbName = "myChatDB";
+const dbName = "fundChatDB";
 const dbVersion = 1;
 let _db;
 openDB();

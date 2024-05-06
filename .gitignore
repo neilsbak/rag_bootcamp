@@ -20,3 +20,5 @@ __pycache__/
 old/
 
 .DS_Store
+
+chroma_db
